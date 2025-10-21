@@ -1,0 +1,79 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<h3 class="mb-4">Agents</h3>
+<div class="position-fixed top-0 end-0 m-3" id="alertContainer" style="z-index: 1050;"></div>
+<div class="d-flex justify-content-end mb-3">
+  <a href="/create-agent" class="btn btn-primary"><i class="bi bi-plus-circle me-2"></i>Create New Agent</a>
+</div>
+<div class="row">
+  {% for agent in agents %}
+  <div class="col-md-3 col-sm-6 mb-3">
+    <div class="card h-100" style="background-color: #FFFFFF; color: #000000; padding: 10px;">
+      <div class="card-body text-center">
+        <div class="rounded-circle bg-dark text-white d-inline-flex align-items-center justify-content-center mb-2" style="width: 50px; height: 50px; font-size: 1.5rem;">{{ agent.name|first }}</div>
+        <h6 class="card-title">{{ agent.name }}</h6>
+        <p class="card-text small">ID: {{ agent.id }}</p>
+        <div class="mt-2">
+          <button class="btn btn-outline-primary btn-sm me-1 update-agent" data-id="{{ agent.id }}" data-name="{{ agent.name }}" data-system="{{ agent.system_message }}" data-initial="{{ agent.initial_message }}"><i class="bi bi-pencil"></i></button>
+          <button class="btn btn-outline-danger btn-sm delete-agent" data-id="{{ agent.id }}"><i class="bi bi-trash"></i></button>
+          <div id="spinner-{{ agent.id }}" class="spinner-border spinner-border-sm text-dark mt-1" role="status" style="display: none;">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="col-12 text-center">
+    <p>No agents found.</p>
+  </div>
+  {% endfor %}
+</div>
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const alertContainer = document.getElementById('alertContainer');
+
+    document.querySelectorAll('.delete-agent').forEach(button => {
+      const agentId = button.getAttribute('data-id');
+      const spinner = document.getElementById(`spinner-${agentId}`);
+      button.addEventListener('click', async function() {
+        spinner.style.display = 'inline-block';
+        button.disabled = true;
+
+        try {
+          const response = await fetch(`/delete-agent/${agentId}`, { method: 'POST' });
+          const result = await response.json();
+          if (result.status === 'success') {
+            alertContainer.innerHTML = `<div class="alert alert-success alert-dismissible fade show" role="alert" style="position: absolute; top: 10px; right: 10px; width: 250px; padding: 10px; font-size: 0.9rem;">${result.message}<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button></div>`;
+            this.closest('.col-md-3').remove();
+            setTimeout(() => alertContainer.firstChild.classList.remove('show'), 2000);
+            setTimeout(() => alertContainer.firstChild.remove(), 2150);
+          } else {
+            alertContainer.innerHTML = `<div class="alert alert-danger alert-dismissible fade show" role="alert" style="position: absolute; top: 10px; right: 10px; width: 250px; padding: 10px; font-size: 0.9rem;">${result.message}<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button></div>`;
+            setTimeout(() => alertContainer.firstChild.classList.remove('show'), 2000);
+            setTimeout(() => alertContainer.firstChild.remove(), 2150);
+          }
+        } catch (error) {
+          alertContainer.innerHTML = `<div class="alert alert-danger alert-dismissible fade show" role="alert" style="position: absolute; top: 10px; right: 10px; width: 250px; padding: 10px; font-size: 0.9rem;">Failed to delete agent: Network error<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button></div>`;
+          setTimeout(() => alertContainer.firstChild.classList.remove('show'), 2000);
+          setTimeout(() => alertContainer.firstChild.remove(), 2150);
+        } finally {
+          button.disabled = false;
+          spinner.style.display = 'none';
+        }
+      });
+    });
+
+    document.querySelectorAll('.update-agent').forEach(button => {
+      button.addEventListener('click', function() {
+        const agentId = this.getAttribute('data-id');
+        const name = this.getAttribute('data-name');
+        const systemMessage = this.getAttribute('data-system');
+        const initialMessage = this.getAttribute('data-initial');
+        window.location.href = `/create-agent?edit=true&id=${agentId}&name=${encodeURIComponent(name)}&system=${encodeURIComponent(systemMessage)}&initial=${encodeURIComponent(initialMessage)}`;
+      });
+    });
+  });
+</script>
+{% endblock %}
