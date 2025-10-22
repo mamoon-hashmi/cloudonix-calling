@@ -387,70 +387,32 @@ async def websocket_endpoint(websocket: WebSocket):
     stream_service = StreamService(websocket)
     transcription_service = TranscriptionService()
     tts_service = TTSFactory.get_tts_service(tts_service_name)
+   
     marks = deque()
-    interaction_count = 1
-    start_time = datetime.now()
-    tasks = []
-    max_reconnect_attempts = 3
-    reconnect_attempts = 0
+    interaction_count = 0
+    await transcription_service.connect()
 
-    async def reconnect_transcription_service():
-        nonlocal reconnect_attempts
-        if not stream_service.active or websocket.application_state == WebSocketState.DISCONNECTED:
-            logger.info(f"Skipping Deepgram reconnection for stream {transcription_service.get_stream_sid()}: Stream inactive or WebSocket disconnected")
-            return False
-        if reconnect_attempts >= max_reconnect_attempts:
-            logger.error(f"Max reconnection attempts ({max_reconnect_attempts}) reached for stream {transcription_service.get_stream_sid()}")
-            return False
-        try:
-            logger.info(f"Attempting to reconnect to Deepgram for stream {transcription_service.get_stream_sid()}, attempt {reconnect_attempts + 1}")
-            await transcription_service.connect()
-            transcription_service.on('utterance', handle_utterance)
-            transcription_service.on('transcription', handle_transcription)
-            transcription_service.on('error', handle_transcription_error)
-            transcription_service.on('close', handle_transcription_close)
-            reconnect_attempts = 0
-            logger.info(f"Reconnected to Deepgram for stream {transcription_service.get_stream_sid()}")
-            return True
-        except Exception as e:
-            reconnect_attempts += 1
-            logger.error(f"Failed to reconnect to Deepgram for stream {transcription_service.get_stream_sid()}: {str(e)}", exc_info=True)
-            return False
+    def replace_template_variables(text, first_name):
+        if not text:
+            return text
+        if first_name:
+            return text.replace("{{First-Name}}", first_name).strip()
+        return re.sub(r'\s+', ' ', text.replace("{{First-Name}}", "").strip())
 
     async def process_media(msg):
-        try:
-            stream_sid = msg.get('streamSid', 'unknown')
-            if 'media' not in msg or 'payload' not in msg['media']:
-                logger.warning(f"Invalid media message format for stream {stream_sid}: {json.dumps(msg, indent=2)}")
-                return
-            payload = base64.b64decode(msg['media']['payload'])
-            if not payload:
-                logger.warning(f"Empty media payload received for stream {stream_sid}, chunk: {msg['media'].get('chunk', 'unknown')}")
-                return
-            logger.debug(f"Received media payload for stream {stream_sid}, length: {len(payload)}, chunk: {msg['media'].get('chunk', 'unknown')}")
-            stream_service._last_media_received = asyncio.get_event_loop().time()
-            if not transcription_service.is_connected:
-                if not await reconnect_transcription_service():
-                    logger.error(f"Cannot send audio: Deepgram reconnection failed for stream {stream_sid}")
-                    return
-            await transcription_service.send(payload)
-        except base64.binascii.Error as e:
-            logger.error(f"Invalid base64 payload for stream {stream_sid}: {str(e)}", exc_info=True)
-        except Exception as e:
-            logger.error(f"Error processing media for stream {stream_sid}: {str(e)}", exc_info=True)
+        await transcription_service.send(base64.b64decode(msg['media']['payload']))
 
     async def handle_transcription(text):
         nonlocal interaction_count
         if not text:
-            logger.debug(f"Empty transcription received for stream {stream_service.stream_sid}")
             return
         logger.info(f"Interaction {interaction_count} – STT -> LLM: {text}")
         await llm_service.completion(text, interaction_count)
         interaction_count += 1
 
     async def handle_llm_reply(llm_reply, icount):
-            logger.info(f"Interaction {icount}: LLM -> TTS: {llm_reply['partialResponse']}")
-            await tts_service.generate(llm_reply, icount)
+        logger.info(f"Interaction {icount}: LLM -> TTS: {llm_reply['partialResponse']}")
+        await tts_service.generate(llm_reply, icount)
 
     async def handle_speech(response_index, audio, label, icount):
         logger.info(f"Interaction {icount}: TTS -> TWILIO: {label}")
@@ -467,326 +429,121 @@ async def websocket_endpoint(websocket: WebSocket):
                     "streamSid": stream_sid,
                     "event": "clear"
                 })
-                
-                # reset states
                 stream_service.reset()
                 llm_service.reset()
-
         except Exception as e:
             logger.error(f"Error while handling utterance: {e}")
             e.print_stack()
 
-    async def handle_transcription_error(error):
-        logger.error(f"Transcription error for stream {transcription_service.get_stream_sid()}: {error}")
-        if not stream_service.active or websocket.application_state == WebSocketState.DISCONNECTED:
-            logger.info(f"Skipping Deepgram reconnection on error for stream {transcription_service.get_stream_sid()}: Stream inactive or WebSocket disconnected")
-            return
-        if not await reconnect_transcription_service():
-            logger.error(f"Failed to reconnect after transcription error for stream {transcription_service.get_stream_sid()}")
-            stream_service.stop()
-            await websocket.close()
-
-    async def handle_transcription_close(close):
-        logger.info(f"Transcription closed for stream {transcription_service.get_stream_sid()}")
-        if not stream_service.active or websocket.application_state == WebSocketState.DISCONNECTED:
-            logger.info(f"Skipping Deepgram reconnection on close for stream {transcription_service.get_stream_sid()}: Stream inactive or WebSocket disconnected")
-            return
-        if not await reconnect_transcription_service():
-            logger.error(f"Failed to reconnect after transcription close for stream {transcription_service.get_stream_sid()}")
-            stream_service.stop()
-            await websocket.close()
-
     transcription_service.on('utterance', handle_utterance)
     transcription_service.on('transcription', handle_transcription)
-    transcription_service.on('error', handle_transcription_error)
-    transcription_service.on('close', handle_transcription_close)
     llm_service.on('llmreply', handle_llm_reply)
     tts_service.on('speech', handle_speech)
     stream_service.on('audiosent', handle_audio_sent)
+
     message_queue = asyncio.Queue()
 
     async def websocket_listener():
         try:
             while True:
                 data = await websocket.receive_text()
-                msg = json.loads(data)
-                await message_queue.put(msg)
-                if msg.get('event') == 'pong':
-                    logger.debug(f"Received pong for stream {msg.get('streamSid', 'unknown')}")
-        except WebSocketDisconnect as e:
-            logger.info(f"WebSocket disconnected for stream {stream_service.stream_sid}: code={e.code}, reason={e.reason}")
-            stream_service.deactivate()
-        except Exception as e:
-            logger.error(f"WebSocket listener error for stream {stream_service.stream_sid}: {str(e)}", exc_info=True)
-            stream_service.deactivate()
+                await message_queue.put(json.loads(data))
+        except WebSocketDisconnect:
+            logger.info("WebSocket disconnected")
 
     async def message_processor():
-        nonlocal start_time
         while True:
             msg = await message_queue.get()
-            logger.debug(f"Processing message for stream {msg.get('streamSid', 'unknown')}: {json.dumps(msg, indent=2)}")
-            try:
-                if msg['event'] == 'connected':
-                    logger.info("Received 'connected' event, sending acknowledgment")
-                    await websocket.send_json({
-                        "event": "connected",
-                        "protocol": "Call",
-                        "version": "1.0.0"
-                    })
-                elif msg['event'] == 'start':
-                    start_time = datetime.now()
-                    logger.debug(f"WebSocket Start Message: {json.dumps(msg['start'], indent=2)}")
-                    logger.info(f"Call started at {start_time.isoformat()}")
-                    stream_sid = msg['start']['streamSid']
-                    start_call_sid = msg['start']['callSid']  # Could be session token or call ID
-                    logger.info(f"Extracted start callSid: {start_call_sid}")
-                    logger.debug(f"Full start message: {json.dumps(msg['start'], indent=2)}")
-                    stream_data = stream_status_data.get(stream_sid, {})
+            if msg['event'] == 'start':
+                stream_sid = msg['start']['streamSid']
+                session_token = msg['start']['callSid']  # This is the session token
 
-                    # Try to find CallContext by session token or call ID
-                    call_id = None
-                    call_context = None
-                    max_retries = 5
-                    retry_delay = 1.0  # seconds
-                    for attempt in range(max_retries):
-                        # Log current call_contexts state for debugging
-                        logger.debug(f"call_contexts state: { {k: v.to_dict() for k, v in call_contexts.items()} }")
-                        # Try matching as session token
-                        for cid, ctx in call_contexts.items():
-                            if ctx.session == start_call_sid:
-                                call_id = cid
-                                call_context = ctx
-                                logger.info(f"Matched as session token: call_id={call_id}, session={start_call_sid}")
-                                break
-                        # Try matching as call ID
-                        if not call_context and start_call_sid in call_contexts:
-                            call_context = call_contexts[start_call_sid]
-                            call_id = start_call_sid
-                            logger.info(f"Matched as call_id: call_id={call_id}, session={call_context.session}")
-                        if call_context:
-                            break
-                        logger.debug(f"Attempt {attempt + 1}/{max_retries}: No CallContext found for start_call_sid {start_call_sid}, retrying in {retry_delay}s")
-                        await asyncio.sleep(retry_delay)
-                    
-                    if not call_context:
-                        logger.warning(f"No CallContext found for start_call_sid {start_call_sid} after {max_retries} retries, creating new CallContext")
-                        call_context = CallContext()
-                        call_context.session = start_call_sid
-                        call_context.call_sid = start_call_sid  # Fallback
-                        call_contexts[start_call_sid] = call_context
-                        call_id = start_call_sid
-                    else:
-                        logger.info(f"Found CallContext for call_id: {call_id} with session: {call_context.session}")
+                # === FIND CallContext using session_token or call_id ===
+                call_context = None
+                call_id = None
 
-                    call_context.stream_sid = stream_sid
-                    call_context.start_time = msg['start'].get('Timestamp') or datetime.now().isoformat()
-                    
-                    # FIRST-NAME SETUP - Yahan pe first_name set karen
-                    # Check if first_name is already set in call_context
-                    current_first_name = getattr(call_context, 'first_name', None)
-                    logger.info(f"Current first_name in call_context: {current_first_name}")
-                    
-                    # If first_name is not set, try to get it from various sources
-                    if not current_first_name:
-                        # Source 1: Check if first_name is in start message custom parameters
-                        if 'start' in msg and 'customParameters' in msg['start']:
-                            custom_params = msg['start']['customParameters']
-                            if 'firstName' in custom_params:
-                                call_context.first_name = custom_params['firstName']
-                                logger.info(f"Set first_name from customParameters: {call_context.first_name}")
-                            elif 'First-Name' in custom_params:
-                                call_context.first_name = custom_params['First-Name']
-                                logger.info(f"Set first_name from customParameters (First-Name): {call_context.first_name}")
-                        
-                        # Source 2: Try to extract from userData if available
-                        elif 'start' in msg and 'userData' in msg['start']:
-                            user_data = msg['start']['userData']
-                            if isinstance(user_data, dict) and 'firstName' in user_data:
-                                call_context.first_name = user_data['firstName']
-                                logger.info(f"Set first_name from userData: {call_context.first_name}")
-                            elif isinstance(user_data, str):
-                                # Try to parse JSON string
-                                try:
-                                    parsed_data = json.loads(user_data)
-                                    if 'firstName' in parsed_data:
-                                        call_context.first_name = parsed_data['firstName']
-                                        logger.info(f"Set first_name from parsed userData: {call_context.first_name}")
-                                except json.JSONDecodeError:
-                                    logger.warning("userData is not valid JSON")
-                        
-                        # Source 3: Fallback - use a default or try to fetch from database/API
-                        if not getattr(call_context, 'first_name', None):
-                            # You can add database/API call here to fetch first_name
-                            # For now, using a fallback
-                            call_context.first_name = "Mamoon"  # Natural sounding fallback
-                            logger.warning(f"first_name not available from any source, using fallback: {call_context.first_name}")
-                    
-                    logger.info(f"Final first_name being used: {call_context.first_name}")
-                    
-                    # Fetch agent data
-                    agent_id = os.getenv("AGENT_ID", "1")
-                    try:
-                        agent_url = f"{AGENT_API_URL}/{agent_id}"
-                        agent_res = requests.get(agent_url, timeout=3)
-                        agent_res.raise_for_status()
-                        agent_data = agent_res.json()
-                        system_message = agent_data.get("system_message")
-                        initial_message = agent_data.get("initial_message")
-                        logger.info(f"Using agent {agent_id} from environment variable")
-                    except Exception as e:
-                        logger.error(f"Failed to fetch agent data for agent_id {agent_id}: {str(e)}", exc_info=True)
-                        system_message = None
-                        initial_message = None
-                    
-                    # Enhanced template variable replacement function
-                    def replace_template_variables(text, context):
-                        """Replace {{First-Name}} template variables with actual values"""
-                        if not text:
-                            return text
-                        
-                        # Debug logging
-                        logger.debug(f"Before template replacement - text: {text}")
-                        
-                        # Replace {{First-Name}} with call_context.first_name if available
-                        if hasattr(context, 'first_name') and context.first_name:
-                            replaced_text = text.replace("{{First-Name}}", context.first_name)
-                            logger.info(f"Successfully replaced {{First-Name}} with: {context.first_name}")
-                            logger.debug(f"After replacement - text: {replaced_text}")
-                            return replaced_text
-                        else:
-                            # If first_name is not available, remove the template variable completely
-                            replaced_text = text.replace("{{First-Name}}", "").strip()
-                            # Clean up any double spaces or awkward punctuation
-                            replaced_text = re.sub(r'\s+', ' ', replaced_text)
-                            replaced_text = re.sub(r' ,', ',', replaced_text)
-                            replaced_text = re.sub(r' \.', '.', replaced_text)
-                            logger.warning("first_name not available, removed {{First-Name}} template")
-                            return replaced_text
-                    
-                    # Customize system message with First-Name and replace template variables
-                    if system_message:
-                        # Replace {{First-Name}} in system_message
-                        original_system_msg = system_message
-                        system_message = replace_template_variables(system_message, call_context)
-                        if original_system_msg != system_message:
-                            logger.info(f"System message updated with first_name: {system_message}")
-                        else:
-                            logger.info("No template variables found in system message")
-                    
-                    # Replace {{First-Name}} in initial_message as well
-                    if initial_message:
-                        original_initial_msg = initial_message
-                        initial_message = replace_template_variables(initial_message, call_context)
-                        if original_initial_msg != initial_message:
-                            logger.info(f"Initial message updated with first_name: {initial_message}")
-                        else:
-                            logger.info("No template variables found in initial message")
-                    
-                    call_context.system_message = system_message
-                    call_context.initial_message = initial_message
-                    call_contexts[call_id] = call_context  # Update with call_id
-                    
-                    llm_service.set_call_context(call_context)
-                    stream_service.set_stream_sid(stream_sid)
-                    transcription_service.set_stream_sid(stream_sid)
-                    logger.info(f"Cloudonix -> Starting Media Stream for {stream_sid} (session: {call_context.session}, call_id: {call_id})")
-                    
-                    if not initial_message or not initial_message.strip():
-                        logger.info(f"Empty or missing initial_message for agent {agent_id}")
-                        if system_message is None:
-                            logger.error(f"No system message defined for agent {agent_id}, cannot proceed")
-                            await tts_service.generate({"partialResponseIndex": None, "partialResponse": "Error: No system message defined"}, 1)
-                        else:
-                            logger.info(f"Triggering LLM with 'Hello' for agent {agent_id}")
-                            await llm_service.completion("Hello", interaction_count=1)
-                    else:
-                        logger.info(f"Sending initial_message to TTS: {initial_message}")
-                        await tts_service.generate({"partialResponseIndex": None, "partialResponse": initial_message}, 1)
-                elif msg['event'] == 'media':
-                    logger.debug(f"Processing media message for stream {msg.get('streamSid', 'unknown')}")
-                    asyncio.create_task(process_media(msg))
-                elif msg['event'] == 'mark':
-                    label = msg['mark']['name']
-                    if label in marks:
-                        marks.remove(label)
-                        logger.debug(f"Mark {label} removed from queue for stream {msg.get('streamSid', 'unknown')}")
-                    else:
-                        logger.warning(f"Received mark {label} not found in queue for stream {msg.get('streamSid', 'unknown')}")
-                elif msg['event'] == 'stop':
-                    duration = (datetime.now() - start_time).total_seconds()
-                    logger.info(f"Cloudonix -> Media stream {msg.get('streamSid', 'unknown')} ended after {duration} seconds. Stop event received.")
-                    call_context.final_status = "stopped"
-                    if call_id in call_contexts:
-                        del call_contexts[call_id]
-                    stream_service.stop()
-                    await websocket.close()
-                    break
-                elif msg['event'] == 'dtmf':
-                    logger.info(f"Received DTMF event for stream {msg.get('streamSid', 'unknown')}: {msg['dtmf']['digit']}")
-                else:
-                    logger.warning(f"Unknown message event: {msg.get('event')} for stream {msg.get('streamSid', 'unknown')}")
-            except Exception as e:
-                logger.error(f"Error processing message for stream {msg.get('streamSid', 'unknown')}: {str(e)}", exc_info=True)
+                # Try to match by session token
+                for cid, ctx in call_contexts.items():
+                    if ctx.session == session_token:
+                        call_context = ctx
+                        call_id = cid
+                        logger.info(f"Matched CallContext by session token: {session_token} → call_id: {call_id}")
+                        break
+
+                # Fallback: try direct match by callSid if it's actually the call_id
+                if not call_context and session_token in call_contexts:
+                    call_context = call_contexts[session_token]
+                    call_id = session_token
+                    logger.info(f"Matched CallContext directly by callSid: {session_token}")
+
+                if not call_context:
+                    logger.warning(f"No CallContext found for session {session_token}, creating new")
+                    call_context = CallContext()
+                    call_context.session = session_token
+                    call_id = session_token
+
+                # === FIRST-NAME (already in call_context from /incoming) ===
+                first_name = getattr(call_context, 'first_name', None) or "Mamoon"
+                logger.info(f"Using first_name: {first_name}")
+
+                # === AGENT FETCHING ===
+                agent_id = os.getenv("AGENT_ID", "1")
+                system_message = os.getenv("SYSTEM_MESSAGE")
+                initial_message = os.getenv("INITIAL_MESSAGE")
+
+                try:
+                    agent_url = f"{os.getenv('AGENT_API_URL')}/{agent_id}"
+                    agent_res = requests.get(agent_url, timeout=3)
+                    agent_res.raise_for_status()
+                    agent_data = agent_res.json()
+                    system_message = agent_data.get("system_message")
+                    initial_message = agent_data.get("initial_message")
+                    logger.info(f"Using agent {agent_id} from API")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch agent {agent_id}: {e}")
+
+                # === REPLACE {{First-Name}} ===
+                if system_message:
+                    system_message = replace_template_variables(system_message, first_name)
+                if initial_message:
+                    initial_message = replace_template_variables(initial_message, first_name)
+
+                # Update context
+                call_context.system_message = system_message
+                call_context.initial_message = initial_message
+                call_context.call_sid = session_token
+                call_context.stream_sid = stream_sid
+                call_contexts[call_id] = call_context
+
+                llm_service.set_call_context(call_context)
+                stream_service.set_stream_sid(stream_sid)
+                transcription_service.set_stream_sid(stream_sid)
+                logger.info(f"Twilio -> Starting Media Stream for {stream_sid}")
+
+                await tts_service.generate({
+                    "partialResponseIndex": None,
+                    "partialResponse": call_context.initial_message or "Hello"
+                }, 1)
+
+            elif msg['event'] == 'media':
+                asyncio.create_task(process_media(msg))
+            elif msg['event'] == 'mark':
+                label = msg['mark']['name']
+                if label in marks:
+                    marks.remove(label)
+            elif msg['event'] == 'stop':
+                logger.info(f"Twilio -> Media stream {stream_sid} ended.")
+                break
             message_queue.task_done()
 
-    async def periodic_health_check():
-        failure_count = 0
-        max_failures = 5
-        while stream_service.active:
-            log_resource_usage()
-            try:
-                if not await stream_service.health_check():
-                    failure_count += 1
-                    logger.warning(f"Health check failed for stream {stream_service.stream_sid} ({failure_count}/{max_failures})")
-                    if failure_count >= max_failures:
-                        logger.error(f"Max health check failures reached for stream {stream_service.stream_sid}, stopping stream")
-                        stream_service.stop()
-                        await websocket.close()
-                        break
-                else:
-                    failure_count = 0
-                if not transcription_service.is_connected and stream_service.active and websocket.application_state != WebSocketState.DISCONNECTED:
-                    if not await reconnect_transcription_service():
-                        logger.error(f"Max reconnection attempts reached, stopping stream {stream_service.stream_sid}")
-                        stream_service.stop()
-                        await websocket.close()
-                        break
-                logger.debug(f"Stream status for {stream_service.stream_sid}: active={stream_service.active}, WebSocket state={websocket.application_state}, Transcription connected={transcription_service.is_connected}")
-            except Exception as e:
-                logger.error(f"Health check error for stream {stream_service.stream_sid}: {str(e)}", exc_info=True)
-                failure_count += 1
-                if failure_count >= max_failures:
-                    logger.error(f"Max health check errors reached for stream {stream_service.stream_sid}, stopping stream")
-                    stream_service.stop()
-                    await websocket.close()
-                    break
-            await asyncio.sleep(5)
-
     try:
-        await transcription_service.connect()
         listener_task = asyncio.create_task(websocket_listener())
         processor_task = asyncio.create_task(message_processor())
-        health_check_task = asyncio.create_task(periodic_health_check())
-        tasks = [listener_task, processor_task, health_check_task]
-        await asyncio.gather(*tasks, return_exceptions=True)
-    except Exception as e:
-        logger.error(f"WebSocket error for stream {stream_service.stream_sid}: {str(e)}", exc_info=True)
-        stream_service.stop()
-        await websocket.close()
+        await asyncio.gather(listener_task, processor_task)
+    except asyncio.CancelledError:
+        logger.info("Tasks cancelled")
     finally:
-        duration = (datetime.now() - start_time).total_seconds()
-        logger.info(f"Cleaning up WebSocket connection for stream {stream_service.stream_sid}. Duration: {duration} seconds")
-        logger.debug(f"Final stream status: active={stream_service.active}, WebSocket state={websocket.application_state}, Active tasks: {len(tasks)}")
-        logger.debug(f"Call contexts: {len(call_contexts)}, Marks queue: {len(marks)}")
         await transcription_service.disconnect()
-        stream_service.stop()
-        tts_service.stop()
-        llm_service.reset()
-        for task in tasks:
-            task.cancel()
-        if websocket.application_state != WebSocketState.DISCONNECTED:
-            await websocket.close()
-        logger.info(f"WebSocket endpoint cleanup completed for stream {stream_service.stream_sid}")
 
 @app.get("/transcript/{call_sid}")
 async def get_transcript(call_sid: str):
