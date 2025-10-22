@@ -1,0 +1,119 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<h3 class="mb-4">Assign Agent</h3>
+<div class="position-fixed top-0 end-0 m-3" id="alertContainer" style="z-index: 1050;"></div>
+
+{% if error %}
+<div class="alert alert-danger alert-dismissible fade show" role="alert" style="position: absolute; top: 10px; right: 10px; width: 250px; padding: 10px; font-size: 0.9rem;">
+    {{ error }}
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+</div>
+{% endif %}
+
+<!-- Current Agent Info -->
+<div class="alert alert-info mb-4">
+    <h6 class="mb-2"><i class="bi bi-info-circle me-2"></i>Current Active Agent</h6>
+    <p class="mb-0">Agent ID: <strong>{{ current_agent_id }}</strong></p>
+    <small class="text-muted">This is the agent currently being used for new calls</small>
+</div>
+
+<form id="assignForm" method="post" action="/assign-agent">
+    <div class="mb-3">
+        <label for="agent_id" class="form-label">Select New Agent</label>
+        <select class="form-select" id="agent_id" name="agent_id" required>
+            {% for agent in agents %}
+            <option value="{{ agent.id }}" {% if agent.id == current_agent_id %}selected{% endif %}>
+                {{ agent.name }} (ID: {{ agent.id }}, Voice: {{ agent.voice_model or 'aura-2-asteria-en' }})
+                {% if agent.id == current_agent_id %} - Currently Active{% endif %}
+            </option>
+            {% endfor %}
+        </select>
+    </div>
+    <button type="submit" class="btn btn-primary" id="submitBtn">
+        <i class="bi bi-check-circle me-2"></i>Assign Agent
+    </button>
+    <div id="spinner" class="spinner-border spinner-border-sm text-dark mt-1" role="status" style="display: none;">
+        <span class="visually-hidden">Loading...</span>
+    </div>
+</form>
+
+<!-- Warning about restart -->
+<div class="alert alert-warning mt-4">
+    <h6 class="mb-2"><i class="bi bi-exclamation-triangle me-2"></i>Important Note</h6>
+    <p class="mb-0">After assigning a new agent, please wait until the assigned agent ID appears under Current Active Agent.</p>
+</div>
+
+<script>
+    document.getElementById('assignForm').addEventListener('submit', async function(event) {
+        event.preventDefault();
+        const submitBtn = document.getElementById('submitBtn');
+        const spinner = document.getElementById('spinner');
+        const alertContainer = document.getElementById('alertContainer');
+        const formData = new FormData(this);
+
+        submitBtn.disabled = true;
+        spinner.style.display = 'inline-block';
+        alertContainer.innerHTML = '';
+
+        try {
+            const response = await fetch('/assign-agent', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+
+            if (result.status === 'success') {
+                let message = result.message;
+                if (result.restart_required) {
+                    message += ' Note: Application restart may be required for full effect.';
+                }
+                
+                alertContainer.innerHTML = `
+                    <div class="alert alert-success alert-dismissible fade show" role="alert" 
+                         style="position: absolute; top: 10px; right: 10px; width: 300px; padding: 10px; font-size: 0.9rem;">
+                        <strong>Success!</strong> ${message}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>`;
+                
+                setTimeout(() => {
+                    location.reload();
+                }, 3000);
+            } else {
+                alertContainer.innerHTML = `
+                    <div class="alert alert-danger alert-dismissible fade show" role="alert" 
+                         style="position: absolute; top: 10px; right: 10px; width: 300px; padding: 10px; font-size: 0.9rem;">
+                        <strong>Error!</strong> ${result.message}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>`;
+            }
+            
+            setTimeout(() => {
+                const alerts = alertContainer.querySelectorAll('.alert');
+                alerts.forEach(alert => {
+                    alert.classList.remove('show');
+                    setTimeout(() => alert.remove(), 150);
+                });
+            }, 5000);
+        } catch (error) {
+            alertContainer.innerHTML = `
+                <div class="alert alert-danger alert-dismissible fade show" role="alert" 
+                     style="position: absolute; top: 10px; right: 10px; width: 300px; padding: 10px; font-size: 0.9rem;">
+                    <strong>Error!</strong> Failed to assign agent: Network error
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>`;
+            
+            setTimeout(() => {
+                const alerts = alertContainer.querySelectorAll('.alert');
+                alerts.forEach(alert => {
+                    alert.classList.remove('show');
+                    setTimeout(() => alert.remove(), 150);
+                });
+            }, 5000);
+        } finally {
+            submitBtn.disabled = false;
+            spinner.style.display = 'none';
+        }
+    });
+</script>
+{% endblock %}

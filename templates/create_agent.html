@@ -1,0 +1,153 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<h3 class="mb-4">{% if edit %}Update{% else %}Create{% endif %} Agent</h3>
+<div class="position-fixed top-0 end-0 m-3" id="alertContainer" style="z-index: 1050;"></div>
+<form id="createForm">
+    <input type="hidden" id="agentId" name="agentId" value="{{ id or '' }}">
+    <div class="mb-3">
+        <label for="name" class="form-label">Name</label>
+        <input type="text" class="form-control" id="name" name="name" value="{{ name or '' }}"
+            placeholder="Enter agent name" required>
+    </div>
+    <div class="mb-3">
+        <label for="initial_message" class="form-label">Initial Message</label>
+        <textarea class="form-control" id="initial_message" name="initial_message" rows="3"
+            placeholder="Enter initial message">{{ initial or '' }}</textarea>
+    </div>
+    <div class="mb-3">
+        <label for="system_message" class="form-label">System Message</label>
+        <textarea class="form-control" id="system_message" name="system_message" rows="6"
+            placeholder="Enter system message" required>{{ system or '' }}</textarea>
+    </div>
+    <div class="mb-3">
+        <label for="voice_model" class="form-label">Voice Model</label>
+        <select class="form-select" id="voice_model" name="voice_model" required>
+            <option value="" disabled {% if not voice_model %}selected{% endif %}>Select a voice</option>
+            {% for voice in voices %}
+            <option value="{{ voice.model }}" {% if voice_model == voice.model %}selected{% endif %}>
+                {{ voice.name }} ({{ voice.gender | capitalize }}, {{ voice.language }} - {{ voice.accent }})
+            </option>
+            {% endfor %}
+        </select>
+        <div id="audioContainer" class="mt-2" style="display: none;">
+            <audio id="voiceSample" controls>
+                <source id="audioSource" src="" type="audio/wav">
+                Your browser does not support the audio element.
+            </audio>
+        </div>
+    </div>
+    <button type="submit" class="btn btn-primary" id="submitBtn">
+        <i class="bi bi-save me-2"></i>{% if edit %}Update{% else %}Create{% endif %} Agent
+    </button>
+    <div id="spinner" class="spinner-border spinner-border-sm text-dark mt-1" role="status" style="display: none;">
+        <span class="visually-hidden">Loading...</span>
+    </div>
+</form>
+
+<script>
+    document.getElementById('createForm').addEventListener('submit', async function (event) {
+        event.preventDefault();
+        const submitBtn = document.getElementById('submitBtn');
+        const spinner = document.getElementById('spinner');
+        const alertContainer = document.getElementById('alertContainer');
+        const agentId = document.getElementById('agentId').value;
+        const url = agentId ? `/update-agent/${agentId}` : '/create-agent';
+
+        submitBtn.disabled = true;
+        spinner.style.display = 'inline-block';
+        alertContainer.innerHTML = '';
+
+        const formData = new FormData(this);
+
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+
+            if (result.status === 'success') {
+                alertContainer.innerHTML = `<div class="alert alert-success alert-dismissible fade show" role="alert" style="position: absolute; top: 10px; right: 10px; width: 250px; padding: 10px; font-size: 0.9rem;">${result.message}<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button></div>`;
+                if (!agentId) document.getElementById('createForm').reset();
+                setTimeout(() => alertContainer.firstChild.classList.remove('show'), 2000);
+                setTimeout(() => alertContainer.firstChild.remove(), 2150);
+                setTimeout(() => window.location.href = '/agents', 2000);
+            } else {
+                alertContainer.innerHTML = `<div class="alert alert-danger alert-dismissible fade show" role="alert" style="position: absolute; top: 10px; right: 10px; width: 250px; padding: 10px; font-size: 0.9rem;">${result.message}<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button></div>`;
+                setTimeout(() => alertContainer.firstChild.classList.remove('show'), 2000);
+                setTimeout(() => alertContainer.firstChild.remove(), 2150);
+            }
+        } catch (error) {
+            alertContainer.innerHTML = `<div class="alert alert-danger alert-dismissible fade show" role="alert" style="position: absolute; top: 10px; right: 10px; width: 250px; padding: 10px; font-size: 0.9rem;">Failed to ${agentId ? 'update' : 'create'} agent: Network error<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button></div>`;
+            setTimeout(() => alertContainer.firstChild.classList.remove('show'), 2000);
+            setTimeout(() => alertContainer.firstChild.remove(), 2150);
+        } finally {
+            submitBtn.disabled = false;
+            spinner.style.display = 'none';
+        }
+    });
+
+    // Update audio player when voice is selected
+    document.getElementById('voice_model').addEventListener('change', async function () {
+        const voiceModel = this.value;
+        const audioContainer = document.getElementById('audioContainer');
+        const audioSource = document.getElementById('audioSource');
+        const voiceSample = document.getElementById('voiceSample');
+        const alertContainer = document.getElementById('alertContainer');
+        const spinner = document.getElementById('spinner');
+
+        if (!voiceModel) {
+            audioContainer.style.display = 'none';
+            return;
+        }
+
+        spinner.style.display = 'inline-block';
+        alertContainer.innerHTML = '';
+
+        try {
+            // Fetch voices from backend
+            const response = await fetch('/voices');
+            const { voices } = await response.json();
+            const voice = voices.find(v => v.model === voiceModel);
+
+            if (!voice || !voice.preview_url) {
+                throw new Error('Preview URL not found for selected voice');
+            }
+
+            // Update audio source and show player
+            audioSource.src = voice.preview_url;
+            voiceSample.load(); // Reload audio element to apply new source
+            audioContainer.style.display = 'block';
+            alertContainer.innerHTML = `<div class="alert alert-info alert-dismissible fade show" role="alert" style="position: absolute; top: 10px; right: 10px; width: 250px; padding: 10px; font-size: 0.9rem;">Loaded sample for ${voice.name}<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button></div>`;
+            setTimeout(() => {
+                const alert = alertContainer.firstChild;
+                if (alert) {
+                    alert.classList.remove('show');
+                    setTimeout(() => alert.remove(), 150);
+                }
+            }, 2000);
+        } catch (error) {
+            audioContainer.style.display = 'none';
+            alertContainer.innerHTML = `<div class="alert alert-danger alert-dismissible fade show" role="alert" style="position: absolute; top: 10px; right: 10px; width: 250px; padding: 10px; font-size: 0.9rem;">Failed to load sample: ${error.message}<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button></div>`;
+            setTimeout(() => {
+                const alert = alertContainer.firstChild;
+                if (alert) {
+                    alert.classList.remove('show');
+                    setTimeout(() => alert.remove(), 150);
+                }
+            }, 2000);
+        } finally {
+            spinner.style.display = 'none';
+        }
+    });
+
+    // Initialize audio player for pre-selected voice (if editing)
+    window.addEventListener('load', function () {
+        const voiceModel = document.getElementById('voice_model').value;
+        if (voiceModel) {
+            document.getElementById('voice_model').dispatchEvent(new Event('change'));
+        }
+    });
+</script>
+{% endblock %}
