@@ -37,20 +37,34 @@ Example configuration:
 SERVER=callapi.vetaai.com
 PORT=3000
 
-# Cloudonix Credentials
-CLOUDONIX_API_KEY=XICE2E52497D40437CA402F4C9ACACB4B7
+# =========================================
+# 🌩️ Cloudonix Configuration
+# =========================================
+CLOUDONIX_API_KEY=sk-your_cloudonix_api_key_here
 CLOUDONIX_API_BASE=https://api.cloudonix.io
-CLOUDONIX_DOMAIN_ID=databasein-stream-zbg7t3.cloudonix.net
-CLOUDONIX_TRUNK_NAME=stream-vicidial-176.9.107.214
+CLOUDONIX_DOMAIN_ID=your_domain_id_here
+CLOUDONIX_TRUNK_NAME=your_trunk_name_here
 
-# API Keys
-GEMINI_API_KEY=AIzaSyA02wBRDUmmI3Y1swcbzPRHo65d3iXHxrw
-OPENAI_API_KEY=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
-ANTHROPIC_API_KEY=your_anthropic_api_key
-DEEPGRAM_API_KEY=ffc7270a8de5fa64f7aa4339dbb2e4c6bbb5ab30
-ELEVENLABS_API_KEY=sk_ed0a269ef4b537870cb47b08773a006af4257800dc0af82d
+
+# =========================================
+# 🤖 AI / API Keys
+# =========================================
+# Google Gemini
+GEMINI_API_KEY=AIza-your_gemini_api_key_here
+
+# OpenAI
+OPENAI_API_KEY=sk-your_openai_api_key_here
+
+# Anthropic Claude
+ANTHROPIC_API_KEY=sk-your_anthropic_api_key_here
+
+# Deepgram (Speech-to-Text)
+DEEPGRAM_API_KEY=dg-your_deepgram_api_key_here
+
+# ElevenLabs (Text-to-Speech)
+ELEVENLABS_API_KEY=el-your_elevenlabs_api_key_here
 ELEVENLABS_MODEL_ID=eleven_turbo_v2
-ELEVENLABS_VOICE_ID=XrExE9yKIg1WjnnlVkGX
+ELEVENLABS_VOICE_ID=your_voice_id_here
 
 # Service Configuration
 TTS_SERVICE=deepgram
