@@ -84,6 +84,8 @@ class DeepgramTTS(AbstractTTSService):
     def __init__(self):
         super().__init__()
         self.client = DeepgramClient(os.getenv("DEEPGRAM_API_KEY"))
+        # Read model from .env, default to 'aura-asteria-en'
+        self.tts_model = os.getenv("DEEPGRAM_TTS_MODEL", "aura-asteria-en")
 
     async def generate(self, llm_reply, interaction_count):
         partial_response_index = llm_reply['partialResponseIndex']
@@ -93,18 +95,16 @@ class DeepgramTTS(AbstractTTSService):
             return
 
         try:
-            source = {
-                "text": partial_response
-            }
+            source = {"text": partial_response}
 
             options = {
-                "model": "aura-asteria-en",
+                "model": self.tts_model,  # Use env-configured model
                 "encoding": "mulaw", 
                 "sample_rate": 8000 
             }
             
             response = await self.client.asyncspeak.v("1").stream(
-                source={"text": partial_response},
+                source=source,
                 options=options
             )
 
@@ -114,7 +114,7 @@ class DeepgramTTS(AbstractTTSService):
                 # Convert audio to numpy array
                 audio_array = np.frombuffer(audio_content, dtype=np.uint8)
                 
-                # Trim the first 10ms (80 samples at 8000Hz) to remove the initial noise
+                # Trim the first 10ms (80 samples at 8000Hz) to remove initial noise
                 trim_samples = 80
                 trimmed_audio = audio_array[trim_samples:]
                 
